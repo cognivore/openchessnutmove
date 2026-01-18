@@ -50,6 +50,10 @@ class ChessnutServerClient:
     def driver_disconnect(self) -> dict:
         return self._client.post("/api/driver/disconnect").json()
 
+    def driver_autoconnect(self, enabled: bool) -> dict:
+        payload = {"enabled": enabled}
+        return self._client.post("/api/driver/autoconnect", json=payload).json()
+
     def __enter__(self) -> "ChessnutServerClient":
         return self
 

@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field
 
 from chessnut_move_stack.driver.driver import ChessnutDriver
 from chessnut_move_stack.server.config import ServerConfig, load_config
+from chessnut_move_stack.server.driver_manager import (
+    AutoConnectConfig,
+    DriverManager,
+)
 from chessnut_move_stack.server.state import (
     AppState,
     apply_fen,
@@ -37,9 +41,14 @@ class PgnRequest(BaseModel):
     force: bool = Field(default=True, description="Force immediate movement")
 
 
+class AutoConnectRequest(BaseModel):
+    enabled: bool = Field(..., description="Enable aggressive auto-connect loop")
+
+
 class DriverStatusResponse(BaseModel):
     enabled: bool
     connected: bool
+    auto_connect: bool
     device_name: Optional[str]
     device_address: Optional[str]
     firmware_version: Optional[str]
@@ -67,11 +76,12 @@ class DriverCommandResponse(BaseModel):
     driver: DriverStatusResponse
 
 
-def _driver_status(driver: Optional[ChessnutDriver]) -> DriverStatusResponse:
-    if driver is None:
+def _driver_status(manager: Optional[DriverManager]) -> DriverStatusResponse:
+    if manager is None:
         return DriverStatusResponse(
             enabled=False,
             connected=False,
+            auto_connect=False,
             device_name=None,
             device_address=None,
             firmware_version=None,
@@ -80,10 +90,11 @@ def _driver_status(driver: Optional[ChessnutDriver]) -> DriverStatusResponse:
             fen=None,
         )
 
-    status = driver.get_status()
+    status = manager.driver.get_status()
     return DriverStatusResponse(
         enabled=True,
         connected=status.connected,
+        auto_connect=manager.auto_connect_enabled,
         device_name=status.device_name,
         device_address=status.device_address,
         firmware_version=status.firmware_version,
@@ -101,7 +112,7 @@ async def _sync_driver(
     return await driver.set_position(fen, force=force)
 
 
-def _state_response(state: AppState, driver: Optional[ChessnutDriver]) -> StateResponse:
+def _state_response(state: AppState, manager: Optional[DriverManager]) -> StateResponse:
     snap = snapshot(state)
     return StateResponse(
         fen=snap.fen,
@@ -109,7 +120,7 @@ def _state_response(state: AppState, driver: Optional[ChessnutDriver]) -> StateR
         turn=snap.turn,
         pgn=snap.pgn,
         updated_at=snap.updated_at,
-        driver=_driver_status(driver),
+        driver=_driver_status(manager),
     )
 
 
@@ -118,9 +129,15 @@ def create_app(config: ServerConfig) -> FastAPI:
     async def lifespan(app: FastAPI):
         store = StateStore(initial_state())
         driver = ChessnutDriver() if config.enable_driver else None
+        manager = (
+            DriverManager(driver, AutoConnectConfig(enabled=config.auto_connect))
+            if driver is not None
+            else None
+        )
 
         app.state.store = store
         app.state.driver = driver
+        app.state.driver_manager = manager
         app.state.config = config
 
         if driver is not None:
@@ -131,12 +148,11 @@ def create_app(config: ServerConfig) -> FastAPI:
 
             driver.on_position_change(on_position)
 
-            if config.auto_connect:
-                asyncio.create_task(driver.connect())
-
         yield
 
-        if driver is not None:
+        if manager is not None:
+            await manager.shutdown()
+        elif driver is not None:
             await driver.disconnect()
 
     app = FastAPI(
@@ -158,14 +174,15 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.get("/api/state", response_model=StateResponse)
     async def get_state():
         store: StateStore = app.state.store
-        driver: Optional[ChessnutDriver] = app.state.driver
+        manager: Optional[DriverManager] = app.state.driver_manager
         state = await store.get()
-        return _state_response(state, driver)
+        return _state_response(state, manager)
 
     @app.post("/api/state/fen", response_model=UpdateResponse)
     async def set_state_fen(request: FenRequest):
         store: StateStore = app.state.store
         driver: Optional[ChessnutDriver] = app.state.driver
+        manager: Optional[DriverManager] = app.state.driver_manager
 
         try:
             state = await store.update(lambda s: apply_fen(s, request.fen))
@@ -173,13 +190,14 @@ def create_app(config: ServerConfig) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         synced = await _sync_driver(driver, state.fen, request.force)
-        response = _state_response(state, driver)
+        response = _state_response(state, manager)
         return UpdateResponse(**response.model_dump(), driver_synced=synced)
 
     @app.post("/api/state/pgn", response_model=UpdateResponse)
     async def set_state_pgn(request: PgnRequest):
         store: StateStore = app.state.store
         driver: Optional[ChessnutDriver] = app.state.driver
+        manager: Optional[DriverManager] = app.state.driver_manager
 
         try:
             state = await store.update(lambda s: apply_pgn(s, request.pgn))
@@ -187,48 +205,62 @@ def create_app(config: ServerConfig) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         synced = await _sync_driver(driver, state.fen, request.force)
-        response = _state_response(state, driver)
+        response = _state_response(state, manager)
         return UpdateResponse(**response.model_dump(), driver_synced=synced)
 
     @app.post("/api/state/reset", response_model=UpdateResponse)
     async def reset_state():
         store: StateStore = app.state.store
         driver: Optional[ChessnutDriver] = app.state.driver
+        manager: Optional[DriverManager] = app.state.driver_manager
 
         state = await store.update(lambda s: apply_fen(s, chess.STARTING_FEN))
         synced = await _sync_driver(driver, state.fen, True)
-        response = _state_response(state, driver)
+        response = _state_response(state, manager)
         return UpdateResponse(**response.model_dump(), driver_synced=synced)
 
     @app.get("/api/driver/status", response_model=DriverStatusResponse)
     async def driver_status():
-        driver: Optional[ChessnutDriver] = app.state.driver
-        return _driver_status(driver)
+        manager: Optional[DriverManager] = app.state.driver_manager
+        return _driver_status(manager)
 
     @app.post("/api/driver/connect", response_model=DriverCommandResponse)
     async def driver_connect():
-        driver: Optional[ChessnutDriver] = app.state.driver
-        if driver is None:
+        manager: Optional[DriverManager] = app.state.driver_manager
+        if manager is None:
             raise HTTPException(status_code=400, detail="Driver disabled")
 
-        success = await driver.connect()
+        success = await manager.connect()
         return DriverCommandResponse(
             success=success,
             message="Connected" if success else "Connection failed",
-            driver=_driver_status(driver),
+            driver=_driver_status(manager),
         )
 
     @app.post("/api/driver/disconnect", response_model=DriverCommandResponse)
     async def driver_disconnect():
-        driver: Optional[ChessnutDriver] = app.state.driver
-        if driver is None:
+        manager: Optional[DriverManager] = app.state.driver_manager
+        if manager is None:
             raise HTTPException(status_code=400, detail="Driver disabled")
 
-        await driver.disconnect()
+        await manager.disconnect()
         return DriverCommandResponse(
             success=True,
             message="Disconnected",
-            driver=_driver_status(driver),
+            driver=_driver_status(manager),
+        )
+
+    @app.post("/api/driver/autoconnect", response_model=DriverCommandResponse)
+    async def driver_autoconnect(request: AutoConnectRequest):
+        manager: Optional[DriverManager] = app.state.driver_manager
+        if manager is None:
+            raise HTTPException(status_code=400, detail="Driver disabled")
+
+        await manager.set_auto_connect(request.enabled)
+        return DriverCommandResponse(
+            success=True,
+            message="Autoconnect enabled" if request.enabled else "Autoconnect disabled",
+            driver=_driver_status(manager),
         )
 
     return app

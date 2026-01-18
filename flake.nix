@@ -17,6 +17,7 @@
           buildInputs = with pkgs; [
             pythonBase
             git
+            stockfish
           ];
 
           shellHook = ''

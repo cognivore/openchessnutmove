@@ -38,6 +38,8 @@ python -m chessnut_move_stack.server
 python -m chessnut_move_stack.client state
 python -m chessnut_move_stack.client set-fen "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
 python -m chessnut_move_stack.client set-pgn --file ./game.pgn
+python -m chessnut_move_stack.client driver-autoconnect --enable
+python -m chessnut_move_stack.client driver-autoconnect --disable
 ```
 
 ## Server API (HTTP)
@@ -49,13 +51,14 @@ python -m chessnut_move_stack.client set-pgn --file ./game.pgn
 - `GET /api/driver/status` -> driver/board status
 - `POST /api/driver/connect` -> connect to board
 - `POST /api/driver/disconnect` -> disconnect from board
+- `POST /api/driver/autoconnect` -> toggle auto-connect loop (`{"enabled": true}`)
 
 ## Configuration
 
 Environment variables:
 
 - `CHESSNUT_DRIVER=off` to run the server without hardware.
-- `CHESSNUT_AUTO_CONNECT=0` to disable auto-connect.
+- `CHESSNUT_AUTO_CONNECT=0` to disable auto-connect on startup (can be toggled via API).
 - `CHESSNUT_HOST`, `CHESSNUT_PORT`, `CHESSNUT_LOG_LEVEL` for server options.
 
 ## Notes

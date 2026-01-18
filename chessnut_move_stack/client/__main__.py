@@ -66,6 +66,16 @@ def main() -> int:
     subparsers.add_parser("driver-status", help="Get driver status")
     subparsers.add_parser("driver-connect", help="Connect to the board")
     subparsers.add_parser("driver-disconnect", help="Disconnect from the board")
+    autoconnect_parser = subparsers.add_parser(
+        "driver-autoconnect", help="Toggle driver auto-connect"
+    )
+    autoconnect_group = autoconnect_parser.add_mutually_exclusive_group(required=True)
+    autoconnect_group.add_argument(
+        "--enable", action="store_true", help="Enable auto-connect"
+    )
+    autoconnect_group.add_argument(
+        "--disable", action="store_true", help="Disable auto-connect"
+    )
 
     args = parser.parse_args()
     base_url = _resolve_base_url(args)
@@ -93,6 +103,9 @@ def main() -> int:
             return 0
         if args.command == "driver-disconnect":
             _print_json(client.driver_disconnect())
+            return 0
+        if args.command == "driver-autoconnect":
+            _print_json(client.driver_autoconnect(args.enable))
             return 0
 
     return 1

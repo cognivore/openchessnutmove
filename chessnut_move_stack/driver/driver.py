@@ -32,6 +32,7 @@ from chessnut_move_stack.driver.protocol import LEDColor, PiecePosition
 logger = logging.getLogger(__name__)
 
 PositionCallback = Callable[[chess.Board], None]
+MoveCompleteCallback = Callable[[], None]
 
 
 @dataclass
@@ -52,6 +53,7 @@ class ChessnutDriver:
     def __init__(self, transport: Optional[BleakTransport] = None) -> None:
         self._transport = transport or BleakTransport()
         self._position_callbacks: list[PositionCallback] = []
+        self._move_complete_callbacks: list[MoveCompleteCallback] = []
         self._current_position: Optional[chess.Board] = None
         self._current_fen: Optional[str] = None
         self._firmware_version: Optional[str] = None
@@ -81,6 +83,10 @@ class ChessnutDriver:
 
     def on_position_change(self, callback: PositionCallback) -> None:
         self._position_callbacks.append(callback)
+
+    def on_move_complete(self, callback: MoveCompleteCallback) -> None:
+        """Register callback for when board signals move completion (MOVE_PIECE_STATE)."""
+        self._move_complete_callbacks.append(callback)
 
     async def connect(self) -> bool:
         return await self._transport.connect()
@@ -189,6 +195,11 @@ class ChessnutDriver:
         pieces = decode_move_piece_state(data)
         if pieces:
             self._piece_positions = pieces
+            for callback in self._move_complete_callbacks:
+                try:
+                    callback()
+                except Exception as exc:
+                    logger.error("Move complete callback error: %s", exc)
 
     async def __aenter__(self) -> "ChessnutDriver":
         return self
