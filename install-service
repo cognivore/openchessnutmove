@@ -50,7 +50,7 @@ check_prerequisites() {
 
 generate_caddy_site() {
     mkdir -p "$CADDY_SITES_DIR"
-    
+
     cat > "$MY_CADDY_SITE" << EOF
 # Chessnut Move Server - http://chessnut.localhost
 http://chessnut.localhost {
@@ -187,10 +187,10 @@ do_uninstall() {
 
 do_status() {
     header "Service Status"
-    
+
     local svc_info
     svc_info=$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" || true)
-    
+
     if [[ -n "$svc_info" ]]; then
         local pid=$(echo "$svc_info" | awk '{print $1}')
         if [[ "$pid" != "-" && "$pid" =~ ^[0-9]+$ ]]; then
@@ -204,7 +204,7 @@ do_status() {
 
     echo ""
     header "Health Check"
-    
+
     if curl -s "http://localhost:${SERVER_PORT}/health" 2>/dev/null | grep -q "ok"; then
         echo -e "  API (localhost:${SERVER_PORT}): ${GREEN}Healthy${NC}"
     else
@@ -221,11 +221,14 @@ do_status() {
     local driver_status
     driver_status=$(curl -s "http://localhost:${SERVER_PORT}/api/driver/status" 2>/dev/null || echo "{}")
     
-    if echo "$driver_status" | grep -q '"connected": true'; then
-        echo -e "  Board: ${GREEN}Connected${NC}"
-    elif echo "$driver_status" | grep -q '"enabled": true'; then
-        echo -e "  Board: ${YELLOW}Enabled but not connected${NC}"
-    elif echo "$driver_status" | grep -q '"enabled": false'; then
+    if echo "$driver_status" | grep -q '"connected":true'; then
+        local device_name=$(echo "$driver_status" | grep -o '"device_name":"[^"]*"' | cut -d'"' -f4)
+        echo -e "  Board: ${GREEN}Connected${NC} ($device_name)"
+    elif echo "$driver_status" | grep -q '"auto_connect":true'; then
+        echo -e "  Board: ${YELLOW}Scanning for board...${NC}"
+    elif echo "$driver_status" | grep -q '"enabled":true'; then
+        echo -e "  Board: ${YELLOW}Enabled, not connected${NC}"
+    elif echo "$driver_status" | grep -q '"enabled":false'; then
         echo -e "  Board: ${BLUE}Driver disabled${NC}"
     else
         echo -e "  Board: ${RED}Unknown${NC}"
@@ -252,9 +255,9 @@ do_status() {
 
 do_logs() {
     local lines="${2:-50}"
-    
+
     header "Server Logs (last $lines lines)"
-    
+
     if [[ -f "$LOG_DIR/server.stderr.log" ]]; then
         tail -"$lines" "$LOG_DIR/server.stderr.log"
     else
